@@ -6,35 +6,18 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import BertTokenizer, BertModel
 import json
 
-json_path = "Datasets/output_case_texts.json"
-case_texts = {}
+train_case_texts_path = "/Users/MacBook/PycharmProjects/BERT/Datasets/train_case_texts.json"
+valid_case_texts_path = "/Users/MacBook/PycharmProjects/BERT/Datasets/validation_case_texts.json"
 
-# 示例数据
-try:
-    with open(json_path, "r", encoding="utf-8") as file:
+
+with open(valid_case_texts_path, "r", encoding="utf-8") as file:
         # 加载 JSON 文件为字典
-        data = json.load(file)
+        valid_case_texts = json.load(file)
+with open(train_case_texts_path, "r", encoding="utf-8") as file:
+    # 加载 JSON 文件为字典
+    train_case_texts = json.load(file)
 
-        # 如果 data 是字符串，尝试将其解析为字典
-        if isinstance(data, str):
-            print("检测到 JSON 文件内容为字符串形式，尝试解析为字典...")
-            data = json.loads(data)  # 将字符串形式的 JSON 解析为字典
 
-        # 确保 data 是字典
-        if not isinstance(data, dict):
-            raise ValueError("JSON 文件内容不是字典！")
-
-        # 将字典内容赋值给 case_texts
-        case_texts.update(data)
-        print("case_texts 已更新:")
-        print(json.dumps(case_texts, ensure_ascii=False, indent=4))
-
-except FileNotFoundError:
-    print(f"文件 {json_path} 未找到，请检查路径是否正确！")
-except json.JSONDecodeError as e:
-    print(f"JSON 文件解析错误: {e}")
-except ValueError as e:
-    print(f"数据格式错误: {e}")
 
 # 模拟案件文本（需要替换为实际案件文本）
 # case_texts = {
@@ -55,11 +38,11 @@ except ValueError as e:
 # 超参数
 BATCH_SIZE = 8 #把庞大的数据集拆分成一个一个迷你数据集（batch），这里表示每个批次会从数据集中调8个样本
 LEARNING_RATE = 2e-5#学习率用来控制模型在每次参数更新时的步伐（更新幅度），这个参数的大小决定了模型学习的速率
-EPOCHS = 3
+EPOCHS = 6
 MAX_LEN = 512
 
 # 加载 BERT 分词器
-tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+tokenizer = BertTokenizer.from_pretrained("bert-base-chinese")
 
 
 # 数据集类
@@ -111,7 +94,7 @@ class LegalCaseDataset(Dataset):#这个类是用来把数据集变成{inputs_ids
 class BertForLCR(nn.Module):
     def __init__(self):
         super(BertForLCR, self).__init__()
-        self.bert = BertModel.from_pretrained("bert-base-uncased")
+        self.bert = BertModel.from_pretrained("bert-base-chinese")
         self.dropout = nn.Dropout(0.3)#在训练时随机抽取30%神经元，将其输出置为0，防止过拟合
         self.classifier = nn.Linear(self.bert.config.hidden_size, 4)  # 4分类 (0, 1, 2, 3)
 
@@ -126,29 +109,44 @@ class BertForLCR(nn.Module):
 
 # 训练函数
 def train_model(model, data_loader, optimizer, criterion, device):
-    model.train()#开启训练模式
+    model.train()  # 开启训练模式
     total_loss = 0
+    correct = 0  # 记录正确预测的样本数
+    total = 0  # 记录总样本数
 
     for batch in data_loader:
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["label"].to(device)
-        #将数据移动到指定设备
+        # 将数据移动到指定设备
+
         optimizer.zero_grad()
-        #清除模型参数中之前计算的梯度，如果不这么做，每一批次都会产生新的梯度加到这个梯度上，导致梯度计算错误，梯度可以理解为指路的方向
+        # 清除模型参数中之前计算的梯度，如果不这么做，每一批次都会产生新的梯度加到这个梯度上，导致梯度计算错误
+
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-        #前向传播，outputs是模型预测结果（logits或概率分布）
+        # 前向传播，outputs是模型预测结果（logits或概率分布）
+
         loss = criterion(outputs, labels)
-        #使用损失函数 criterion 计算模型预测值（outputs）与真实标签（labels）之间的误差
+        # 使用损失函数 criterion 计算模型预测值（outputs）与真实标签（labels）之间的误差
+
         loss.backward()
-        #反向传播
+        # 反向传播
+
         optimizer.step()
-        #更新模型参数
+        # 更新模型参数
 
         total_loss += loss.item()
-        #计算累计损失
-    return total_loss / len(data_loader)
-        #返回平均损失
+        # 计算累计损失
+
+        # 计算准确率
+        _, preds = torch.max(outputs, dim=1)  # 获取预测的类别
+        correct += (preds == labels).sum().item()  # 累计正确预测的样本数
+        total += labels.size(0)  # 累计样本总数
+
+    avg_loss = total_loss / len(data_loader)  # 平均损失
+    accuracy = correct / total  # 计算准确率
+
+    return avg_loss, accuracy
 
 # 验证函数
 def evaluate_model(model, data_loader, criterion, device):
@@ -181,22 +179,24 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 加载 data.json 文件
-    data_path = "Datasets/LeCARD/label_top30_dict.json"  # 你的 data 文件路径
-    try:
-        with open(data_path, "r", encoding="utf-8") as file:
-            data = json.load(file)
-            print("data 已加载:")
-            print(json.dumps(data, ensure_ascii=False, indent=4))
-    except FileNotFoundError:
-        print(f"文件 {data_path} 未找到，请检查路径是否正确！")
-        return
-    except json.JSONDecodeError as e:
-        print(f"JSON 文件解析错误: {e}")
-        return
 
+    train_data_path = "/Users/MacBook/PycharmProjects/BERT/Datasets/LeCARD/test_set.json"
+    val_data_path = "/Users/MacBook/PycharmProjects/BERT/Datasets/LeCARD/validation_set.json"
+
+    with open(train_data_path, "r", encoding="utf-8") as f:
+        train_data = json.load(f)
+
+    with open(val_data_path, "r", encoding="utf-8") as f:
+        val_data = json.load(f)
+
+    # 传递加载后的数据给 LegalCaseDataset
+    train_dataset = LegalCaseDataset(train_data, train_case_texts, tokenizer, MAX_LEN)
+    val_dataset = LegalCaseDataset(val_data, valid_case_texts, tokenizer, MAX_LEN)
     # 数据集和数据加载器
-    dataset = LegalCaseDataset(data, case_texts, tokenizer, MAX_LEN)
-    data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    #dataset = LegalCaseDataset(data, case_texts, tokenizer, MAX_LEN)
+    #data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
     # 模型、损失函数和优化器
     model = BertForLCR().to(device)
@@ -205,12 +205,13 @@ def main():
 
     # 训练和验证
     for epoch in range(EPOCHS):
-        train_loss = train_model(model, data_loader, optimizer, criterion, device)
-        val_loss, val_accuracy = evaluate_model(model, data_loader, criterion, device)
+        train_loss, train_accuracy = train_model(model, train_loader, optimizer, criterion, device)
+        print(f"Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}")
+        val_loss, val_accuracy = evaluate_model(model, val_loader, criterion, device)
 
         print(f"Epoch {epoch + 1}/{EPOCHS}")
-        print(f"Train Loss: {train_loss:.4f}")
         print(f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
+        print(f"Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}")
 
     # 保存模型
     torch.save(model.state_dict(), "bert_lcr_model_LeCARD.pth")
